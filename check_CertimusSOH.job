@@ -1,0 +1,141 @@
+#!/bin/ksh
+
+###########################################################################################
+#  MRF  - 10-11-2023 - Script per controlar els SOH de les Certimus-Guralp amb modem.
+#                      Controla la Bateria (V), la temperatura, GPS, disc, etc, i envia 
+#                      mails  cada nit. 
+#                      Per construir el log necesito tenir acces http://$ip/status.txt
+#  Rev. - 24-04-2025 - Corregeixo el tema de les dates al cos del mail, al subject estaven
+#                      be, pero al cos quedava data del dia anterior.
+#
+#    El fitxer status.log te finals de carro ^M al final de cada linea -carriage return-
+#    que es podrien netejar amb dos2unix: sudo apt-get install dos2unix
+#
+#    Pero ho faig amb el comando TR, igual que vaig fer per netejar el status.log i elimino
+#    tots el caracters no imprimibles/ilegible samb l'opcio :  [:print:]
+#    https://geekland.eu/uso-del-comando-tr-en-linux-y-unix-con-ejemplos
+#
+#    curl "http://193.144.103.200/status.txt" | tr -cd '[:print:]\n' > status.txt
+#
+#
+#    Usage:  check_CertimusSOH.job station_code ip
+#
+#           network            2 character code, e.g. GC 
+#           station_code:      3-to-5 character code, e.g. TAUL
+#           ip:                IP direction, e.g. 193.144.103.200 or ictja21.eairlink.com
+###########################################################################################
+
+if [[ $# != 3 ]];then
+   echo "Usage: check_CertimusSOH.job net station_code ip"
+   echo "       check_CertimusSOH.job GC TAUL ictja21.eairlink.com"
+   exit 1
+fi
+
+# variables d'entrada
+net=$1
+sta=$2
+ip=$3
+
+# Destinataris dels mails d'avis
+MailsAvis="mruiz@geo3bcn.csic.es, labsis@geo3bcn.csic.es"
+
+# Creo un directori on anar ficant tots els fitxers intermedis i els logs. Faig un directori per xarxa, i els logs per estacio 
+if [ -d Trash ]; then
+   echo "Dir Trash already exists!"
+else
+   mkdir -v Trash 
+fi
+
+if [ -d Trash/Check_SOH_$net ]; then
+   echo "Dir Trash/Check_SOH_$net already exists!"
+else
+   mkdir -v Trash/Check_SOH_$net
+fi
+
+cd Trash/Check_SOH_$net
+
+# Miro la data actual. Si genero la capcalera del log SOH en aquest punt com feia fins ara, el mail tindra la data malament
+# perque s'envia el correu quan canvia la data, l'endema. Obro amb un Touch un fitxer temporal on anire ficant el logs SOH.
+# Cada cop que canvii la data enviare un mail amb els soh del dia anterior.
+date +%F | read fechaini
+
+#echo -e "$net - $sta\nSOH from $fechaini\n More info: mruiz@geo3bcn.csic.es\n\nNet_Site    s/n         Time Stamp    Temp  Hum   Volt     Lat      Lon        Z   GPS_Stb SatUs/Vs  DiscUsed/Total  %Used" > soh.$net.$sta.txt
+touch soh.$net.$sta.temp
+
+# inicio un bucle infinit, guardo la varaible t, per parar-lo si em conve.
+count=0
+t=0 
+
+while [ $t -eq 0 ]
+do
+
+  echo "$count + 1" | bc  | read count
+  echo -e "\nLoop Number = $count \n"
+
+# Miro quina hora es ara, sense minuts ni segons (UTC)
+  date +%F%t%k -u | read sdate time
+
+  echo -e "\nDate: $sdate Time: $time h UTC \n"
+
+  if [[ $sdate != $fechaini ]]
+  then
+# Si la data actual es diferent a la inicial, creo la capçalera del mail, enganxo a la llista de SOH que he anant 
+# creant i envio el mail amb el fitxer de SOH a la llista de direccions. Reinicio el nou log i actualitzo la data inicial.
+    echo -e "\n   Sending $net - $sta SOH email\n"
+
+    echo -e "$net - $sta\nSOH from $fechaini\n More info: labsis@geo3bcn.csic.es\n\nNet_Site    s/n         Time Stamp    Temp  Hum   Volt     Lat      Lon        Z   GPS_Stb SatUs/Vs  DiscUsed/Total  %Used" > header.$net.$sta.txt
+    cat header.$net.$sta.txt soh.$net.$sta.temp > soh.$net.$sta.txt
+
+    mail <  soh.$net.$sta.txt -s 'SOH '$net'_'$sta' - '$fechaini' '  $MailsAvis
+
+# Netejo fitxers intermedis i torno a comecar
+    rm -fv header.$net.$sta.txt soh.$net.$sta.temp soh.$net.$sta.txt
+
+# Torno a reiniciar el fitxer de logs diaris i faig el canvi de data inicial
+    touch soh.$net.$sta.temp
+    fechaini=$sdate
+
+  else 
+# Si la data actual es igual a la anterior, inicio o continuo l'extraccio dels SOH i omplint el fitxer de SOH
+    echo  "Extracting state-of-health (SOH) information from $net - $sta ... "
+
+# descarrego el SOH, el netejo de caracters raros i extrec la informacio necessaria pel mail
+    curl "http://$ip/status.txt" | tr -cd '[:print:]\n' > status.$sta
+
+    awk '{if ($1=="Digitizer") {n=0;}
+    if (($1=="Host")&&($2=="name:")) {serial=$3;}
+    if (($1=="SEED")&&($2=="network:")) {net=$3;}
+    if (($1=="SEED")&&($2=="station:")) {site=$3;}
+    if ($1=="Temperature:") {temp=$2;}
+    if (($1=="Relative")&&($2=="humidity:")) {hum=substr($3,1,length($3)-1);}
+    if (($1=="Input")&&($2=="voltage:")) {vol=$3;}
+    if ($1=="Latitude:") {lat=$2;}
+    if ($1=="Longitude:") {lon=$2;}
+    if ($1=="Altitude:") {alt=$2;}
+    if (($1=="Last")&&($2=="timestamp:")) {dateTS=$3; hourTS=$4;}
+    if ($1=="Stability:") {stab=substr($2,1,length($2)-1);}
+    if (($1=="Satellites")&&($2=="used:")) {satU=$3;}
+    if (($1=="Satellites")&&($2=="in")&&($3=="view:")) {satV=$4;}
+    if ($1=="Capacity:") {diskC=$2;}
+    if ($1=="Used:") {diskU=$2;}
+
+    if ($1=="Sensor0") {n=1;}
+
+    if (n==1) {printf("%s_%s %s %s %s %5.2f %5.2f %5.2f %f %f %7.2f  %3.0f    %d/%d   %6.2f/%6.2f   %6.2f\n",net, site, serial, dateTS, hourTS, temp, hum, vol, lat, lon, alt, stab, satU, satV, diskU/1000000, diskC/1000000, (diskU/diskC)*100);
+           n=0;}
+     }' status.$sta >> soh.$net.$sta.temp
+
+# guardo part de la indormacio del status.txt al Log d'execució del script
+    head -n 58 status.$sta
+
+    rm -fv status.$sta
+
+# Esperem 6h - chequejem l'estacio 4 cops al dia
+    echo "Waiting ..."
+    sleep 21600
+  fi
+
+# OJO mato el process - nomes tests / debug
+#t=1
+
+done

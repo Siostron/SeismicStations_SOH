@@ -3,7 +3,7 @@
 
 - # Cube_CCube_Digos/BorrarDatos_CUBE.job
 
-  When Digos CUBE datalogger fills its internal memory, it no longer record anymore data. Recording 3Ch at 100 sps its internal 32Gb memory can last 280 days, it is 9 month aproximately. If it is attacched to a CCUBE sending data by seedlink we want it recording continously, so it is necessary to delete the old data.
+  When a Digos CUBE datalogger fills its internal memory, it no longer record anymore data. Recording 3Ch at 100 sps its internal 32Gb memory can last 280 days, it is 9 month aproximately. If it is attacched to a CCUBE sending data by seedlink we want it recording continously, so it is necessary to delete the old data.
 
   We use this script with Linux cron:
   

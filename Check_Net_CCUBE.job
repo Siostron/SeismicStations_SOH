@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# MRF - 2025-08-06 - Script para verificar el estado de la red de la CCUBE, si 
+#                    tiene o no acceso a internet, y reiniciarla si es necesario.
+#
+#                  - Lo ponemos en el cron para que se ejecute cada hora
+#                    0 * * * * /home/ccube-admin/Check_Net_CCUBE.job > /home/ccube-admin/log_net 2>&1
+#
+#                  - Es necesario instalar bc:
+#                    root@CC328:/home/ccube-admin# apt-get install bc
+#
+# MRF - 2025-08-07 - Borro fichero /var/log/btmp file, which contains all the bad 
+#                    login attempts (ver man last).
+
+envio=5
+
+echo "-----------------------------------------------------------------------"
+date
+
+rebut=$(ping -c$envio -q 8.8.8.8 | awk '{if (NR == 4) print $4;}') 
+
+dif=$(echo "$envio - $rebut" | bc)
+
+echo " - Paquetes Enviados: $envio - Recibidos: $rebut - Diferencia / Perdidos: $dif"
+
+# Aprovecho para borrar antes un log que crece desmesuradamente - which contains all the bad login 
+# attempts - Ver man last
+rm -v /var/log/btmp
+
+if [ $dif -eq 0 ]
+then
+    echo "Todo Correcto - No Hago nada"
+    echo
+else
+    if [ $dif -lt $envio ]
+    then
+       echo "Paciencia... No va del todo mal... "
+       echo
+    fi
+    if [ $dif -eq $envio ]
+    then
+       echo "Problemas de Connexion a la red. Es Necesario Reiniciar"
+       echo " --> Hacemos: sudo reboot"
+       sudo reboot
+       echo
+    fi
+fi
+

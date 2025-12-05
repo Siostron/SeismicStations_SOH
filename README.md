@@ -8,7 +8,8 @@
   We use this script with Linux cron:
   
   crontab -l
-    0 0 1 */6 * /home/ccube-admin/BorrarDatos_CUBE.job > /home/ccube-admin/log 2>&1
+  
+  0 0 1 */6 * /home/ccube-admin/BorrarDatos_CUBE.job > /home/ccube-admin/log 2>&1
 
   
 - # Cube_CCube_Digos/Check_Net_CCUBE.job
@@ -18,7 +19,8 @@
   We use this script with Linux cron:
 
   crontab -l
-    0 * * * * /home/ccube-admin/Check_Net_CCUBE.job > /home/ccube-admin/log_net 2>&1
+  
+  0 * * * * /home/ccube-admin/Check_Net_CCUBE.job > /home/ccube-admin/log_net 2>&1
 
 
 

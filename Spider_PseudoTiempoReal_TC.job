@@ -1,0 +1,355 @@
+#!/bin/ksh
+
+# --------------------------------------------------------------------------------------------------------
+#                                    MRF -  ICTJA-CSIC -  14/12/2015 --> 08/05/2025
+# -------------------------------------------------------------------------------------------------------- 
+# Script para descargar periodicamente los ficheros SPD de las spiders y simular un "pseudo Tiempo Real".
+# Una vez descargados, los convertimos a mseed y los introducirmos en el RingServer de Iris para que se 
+# lancen via seedlink hacia el Seiscomp3 y el Winston server.
+#
+# Hay que tener opertivo el siguiente software de IRIS:
+#
+# https://seiscode.iris.washington.edu/projects/ringserver
+#
+# --------------------------------------------------------------------------------------------------------
+#
+# Pequena descripcion de los Flags utilizados en el comando wget:
+#
+# -nd option is to not create directories.
+# The -r option is to retrieve recursively
+#
+#  -A acclist --accept acclist
+#  -R rejlist --reject rejlist
+#    Specify comma-separated lists of file name suffixes or patterns to accept or reject.
+#
+# -F --force-html
+#   When input is read from a file, force it to be treated as an HTML file.
+#
+# -B URL --base=URL
+#   Resolves relative links using URL as the point of reference, when reading links from an HTML file
+#
+# -i file --input-file=file
+#   Read URLs from a local or external file.
+#
+# --post-data=string
+# Use POST as the method for all HTTP requests and send the specified data in the request body. 
+#
+# --------------------------------------------------------------------------------------------------------
+#
+# Respecto a scripts Spider anteriores uso los sigueintes flags extras:
+#
+# -nc  - wget solo descarga fichero nuevos, n odescargados anteriormente
+# -P coloca las descarga en el directirio especificado
+#
+# --------------------------------------------------------------------------------------------------------
+# Necesita qmerge para el troceado de los mseed a un tamaño adecuado y para fijar el block size a 512
+# /Soft/qmerge necesita librerias /Soft/qlib2
+# La fecha de validez de /Soft/qlib2/leapseconds se fija a 2055...
+# --------------------------------------------------------------------------------------------------------
+
+if [[ $# != 3 ]];then
+   echo "Usage: Spider_PseudoTiempoReal.job NET STA_NAME IP"
+   echo "       Spider_PseudoTiempoReal.job FB FIJA 195.77.36.140:46666"
+   exit 1
+fi
+
+# ------------------------
+# Definicion de variables:
+# ------------------------
+
+# Destinatarios del Mail de SOH - Un mail diario!
+#
+DirecMails="mruiz@geo3bcn.csic.es"
+
+# Destinatarios de los mails de avisos (ocupacion disco y volumen de ficheros SPDs descargados)
+#
+MailsAvisos="mruiz@geo3bcn.csic.es, labsis@geo3bcn.csic.es"
+
+# Volumen de ficheros SPDs descargados a partir del cual mandaremos un aviso (en bytes)
+# Fijo a unos 4Gb aprox. una vez mandando el primer mail voy incrementando esta variable
+# de 500 en 500Mb para que no mande avisos cada media hora.
+#
+aviso_ocup="4000000"
+
+# Particion a chequear y volumen de ocupacion en tanto porciento a partir de la cual se avisa y se para el proceso (n=1)
+#
+partic="/dev/sda1"
+vol_ocup="85"
+
+# Directorio del Ringserver - En el se copiaran los mseeds para ser transmitidos.
+#
+RingDir="/home/eworm/RingServer/mseed"
+
+# El bucle se ejecutara eternamente hasta que n sea distinto de cero.
+# Utilizo esta variable para parar el bucle (Ej. df disco lleno)
+#
+n=0
+
+# Lee el nombre de red, nombre de estacion y el IP del instrumento a procesar
+# 
+NET=$1
+STA_NAME=$2
+IP=$3
+LOC=""
+
+# Directorio interno de datos de la sipder. No tocar!
+#
+DIRECTORY="\\data\\"
+
+# Definincion de varios tiempos:
+#
+# Intentamos la descarga cada media hora. Seguramente a 100Hz se podria dejar a 2h (7200s), pero de esta forma garantizamos
+# que no haya ningun ciclo sin ficheros - A costa de que haya ciclos sin ninguno.
+#  --- Tiempo de espera entre ciclos en segundos
+time=1800
+
+# Para evitar saturar el seiscomp lanzando de golpe todo el mseed nuevo, lo troceamos en porciones T_sub minutos
+#  --- Duracion de las trazas troceadas en minutos
+T_sub=2
+
+# y los mandamos al ringserver con un delay de T_delay segundos.
+#  --- Tiempo de retardo en segundos
+T_delay=20
+
+
+# Fecha de Inicio Y Final de la descarga: yyyymmddhhmmss
+#
+# Fecha de inicio: La calculo para el momento de lanzar el script. Miro que hora es y defino la hora de inicio como 3 
+# horas antes de la actual: Dia y hora actual - 3h
+
+date -d "today" +'%F %T' | awk '{printf("%4d%02d%02d%02d%02d00\n",substr($1,1,4),substr($1,6,2),substr($1,9,2),substr($2,1,2)-3,substr($2,4,2))}' | read DATE_START
+
+# Fecha Final: Pongo una fecha de finalizacion en el futuro lejano para que no pare hasta que se lo digamos
+
+DATE_STOP="25590101000000"
+
+post_param="list_data=$DATE_START,$DATE_STOP,$DIRECTORY"
+
+# Creamos algunos directorios para mantener ordenados los datos - Verificamos si existen, si es el caso paramos el
+# proceso para limpiar 
+#
+
+if [ -d $STA_NAME ]; then
+
+  echo
+  echo " ########################################################################"
+  echo "              Atencion el directorio $STA_NAME ya existe !!              "
+  echo "       Es aconsejable eliminarlo, o cambiarlo de nombre si quieres       "
+  echo "  conservar los ficheros SPD de la Spider, y volver a ejecutar el Script "
+  echo " ########################################################################"
+  echo
+
+  exit
+
+else
+
+  mkdir $STA_NAME
+  cd $STA_NAME
+  mkdir spd new
+
+# Reiciniamos la lista de ficheros descargados a cero/en blanco - Ningun fichero descargado
+
+  echo "" > list_old
+
+# Miro la fecha actual y genero la cabecera del log de soh. Cada vez que cambie la fecha mandare un mail con los soh del dia anterior
+
+  date -d "today" +'%F' | read fechaini
+  echo "Battery   System_Voltage  Temperature  Humudity  SD_Size    SD_Used   Last_Time_SOH"  > soh.txt
+
+# Empezamos el Bucle infinito en el que cada X segundos se intenta descargar nuevos datos, si los hay, de la spider.
+# Esto se consigue con el flag -nc. Para cada vuelta del bucle miro si hay ficheros nuevos, si hay los copio en un direcorio a parte
+# y solo convierto esos a mseed, y los mando al directorio del RingServer para que se transmitan via seedlink.
+
+  while [ $n -eq 0 ]
+  do
+
+# Descargo ficheros
+
+    echo -e "\n --> Intentamos descargar ficheros nuevos ... \n\n"
+
+    wget -nc -nd -r -A .spd -F -B http://$IP -i http://$IP/html/spider_list_data_files.html --post-data $post_param -P spd
+
+    ls spd/*.spd > list
+    diff list_old list  > q
+
+# Miro si hay ficheros nuevos respecto a la ultima descarga.
+# Si los hay los separo de los anteriores, los convierto a mseed y los mando al Ring server.
+# De esta forma no estoy convirtiendo todo el rato los mismos ficheros.
+#
+# Varios problemas a solucionar: 1) Si se para el script y se vuelve a ejecutar sin borrar el directorio $STA_NAME
+#                                encuentra todos los ficheros que haya alli como nuevos. Hacer que si existe lo
+#   (Solucionados 18/12/2015)    borre antes de empezar. Borrar o cambiar de nombre antes de hacer backup de los spd.
+#                                2) Si mandamos de golpe miniseed de 2h al ringserver saturamos el seiscomp3 y el
+#                                WinstonServer, los troceo y los mando al rinserver con cierto retardo.
+
+    if [[ -s q ]] ; then
+       echo -e "\n --> Hay ficheros nuevos, los procesamos y los mandamos al Ringserver. \n"
+       echo
+       awk '{if ($1==">") printf("cp -v %s new\n",$2)}' q > copia
+       chmod +x copia
+       ./copia
+       rm ./copia
+
+       spd2ms -s -n $NET -l " " -d new -o mseed
+
+#  Preparamos los datos Spider-mseed para mandarlos al IRIS Ringserver:
+#
+# - Los mseed de las spiders salen del spd2ms con un block size de 4096 --> Re-bloqueo los mseed a 512 para
+# que el Ringserver los coja sin problemas - Protocolo seedlink solo trabaja con block size de 512 (-w 1 -b 512).
+#
+# - A fin de relentizar la transferencial al Seiscomp3 y al Winston server, troceo los datos a pedazos de pocos 
+# minutos (-P '$T_sub'M) y los mando al Rinserver esperando varias decenas de segundos ($T_delay segundos). Separo
+# las distintas estaciones en distintos directorios para poder ir limpiando de forma individualizada.
+#
+# - El troceado de los mseed se podria hacer con el flag -i de spd2ms (--intervaltime - Time interval in minutes)
+# pero como al principio pensaba que no iba a necesitar trocear, no lo pense, y ahora que lo se no lo cambio 
+# pues igualmente necesito el qmerge para cambiar el block size a 512...
+#
+# Maig 2025 - Migracioa  Ubuntu 24.04 LTS:
+#
+# El nou qmerge necesita les llibreries qlib i que el fitxer leapseconds tingui data valida i tots els leapsecons.
+# Al fitxer /Soft/qlib2/leapseconds hi ha una linea que el fa caducar cada any. Per a no estar pendent de ell li
+# poso data molt Futur...
+#
+# # Line below is structured comment parsed by qtime routine.
+# # VALID TO: 2045/12/31
+#
+# Podria fer el trocejat amb dataselect o spd2ms pero no el canvi de blocksize! D'aqui la xapussa
+
+       cd mseed
+
+       rm *.txt
+       for filems in *.mseed
+       do
+          qmerge -w 1 -b 512 -P "$T_sub"M $filems >> /dev/null
+          rm $filems
+       done
+
+# - Movemos los ficheros
+
+       echo  -e "\n --> Moviendo ficheros mseed al Ringbufer en segmentos de $T_sub minutos...\n  --> Retardo de $T_delay segundos\n"
+
+# verifico si en $RingDir existe el directorio $STA_NAME, y lo creo si es necesario
+
+       if [ -d $RingDir/$STA_NAME ]
+       then
+          echo -e "\n Ok! $RingDir/$STA_NAME existe. Sigo ...\n"
+       else
+          echo -e "\n Eo! $RingDir/$STA_NAME no existe. Lo creo y sigo ...\n"
+          mkdir $RingDir/$STA_NAME
+       fi
+
+       for filereblkZ in $STA_NAME.$NET.??Z..D.*
+       do
+           echo $filereblkZ | awk -F. '{printf("%s.%s.%sN..D.%4d.%03d.%06d",$1,$2,substr($3,1,2),$6,$7,$8)}' | read filereblkN
+           echo $filereblkZ | awk -F. '{printf("%s.%s.%sE..D.%4d.%03d.%06d",$1,$2,substr($3,1,2),$6,$7,$8)}' | read filereblkE
+
+# Dejo el move de los subficheros mseed separados por canales por si al final necesitamos poner un sleep entre canal y canal
+           mv -v $filereblkZ $RingDir/$STA_NAME
+           mv -v $filereblkN $RingDir/$STA_NAME
+           mv -v $filereblkE $RingDir/$STA_NAME
+
+           echo
+           sleep $T_delay
+       done
+
+       cd ..
+
+# Limpiamos temporales
+
+       rmdir mseed
+       rm new/*.spd
+ 
+    else
+       echo -e "\n --> De momento parece que no hay ficheros nuevos.\n "
+       echo
+    fi
+
+# Actualizo la lista de ficheros spd ya procesados
+    mv list list_old
+
+# Limpio temporales
+    rm q spd/spider_list_data_files.html*
+
+    echo -e "\n ---- >>  Esperamos $time Segundos antes de intentar descargar de nuevo\n\n"
+    date
+    sleep $time
+    date
+
+# Verifico si en el directorio RingDir hay ficheros del loop anterior, si los hay los borro, sino sigo esperando.
+# Si no hacemos esta verificacion se queja de que no puede borrar ficheros que no existen. En realidad no pasa nada
+# pero asi queda mas curioso ...
+
+    if [[ -z $(ls -A $RingDir/$STA_NAME) ]]
+    then
+       echo -e "\n ---- >>  No hay ficheros mseed que limpiar en el diretorio $RingDir/$STA_NAME\n ---- >>  Seguimos  ... \n\n"
+    else
+       echo -e "\n ---- >>  Limpiamos los ficheros mseed del diretorio $RingDir/$STA_NAME  ... \n\n"
+       rm -v $RingDir/$STA_NAME/$STA_NAME.$NET*
+       echo
+    fi
+
+# Genero el mail de SOH y lo mando una vez al dia. Si la fecha actual es igual a la anterior cojo el log de la spider.
+# Si la fecha cambia, cojo el ultimo log, limpio las lineas repetidas, mando el fichero de SOH a la lista de direcciones, 
+# empiezo un nuevo log y actualizo la fecha inicial.
+
+    date -d "today" +'%F' | read fechafin
+
+    if [[ $fechafin != $fechaini ]]
+    then
+
+       wget -q -O - http://$IP/spider_get_api.html --post-data="api_get_call=health" |
+       awk -F, '{printf("%4.1f V    %3.1f V           %4.1f C      %5.1f      %d Mb   %d Mb    %s\n",$1/1000,$2/1000,$3/100,$4/100,$5,$6,$7)}' >> soh.txt
+
+       awk 'BEGIN {hora=xxxx;} 
+            {if (NR==1) {print $0;}
+             if ((NR>1)&&($12!=hora)) {print $0; hora=$12;}
+            }' soh.txt | mail -s 'SOH '$STA_NAME' - '$fechaini' '  $DirecMails
+
+       echo "Battery   System_Voltage  Temperature  Humudity  SD_Size    SD_Used   Last_Time_SOH"  > soh.txt
+       date -d "today" +'%F' | read fechaini
+
+   else
+
+       wget -q -O - http://$IP/spider_get_api.html --post-data="api_get_call=health" |
+       awk -F, '{printf("%4.1f V    %3.1f V           %4.1f C      %5.1f      %d Mb   %d Mb    %s\n",$1/1000,$2/1000,$3/100,$4/100,$5,$6,$7)}' >> soh.txt
+
+   fi
+
+# Hacemos un du del directorio de ficheros SPDs, y si es mayor que el valor $aviso_ocup, manda un mail a los destinatarios
+# de alertas $MailsAvisos e incrementa $aviso_ocup 500Mb para que no este mandando mails cada media hora!
+#
+   du spd | awk '{print $1}' | read ocup_spd
+
+   if [[ $ocup_spd -gt $aviso_ocup ]]
+   then
+      echo -e "\n   - Atencion el directorio $STA_NAME/spd ocupa actualmente $ocup_spd bytes\n\n Se deberia parar momentaneamente la adquisicion para hacer un backup\n de los ficheros SPD descargados hasta el momento y convertirlos a mseed\n para la base de datos.\n\n - ps -ef | grep Spider\n - kill pid ( Spider_PseudoTiempoReal.job $NET $STA_NAME $IP )\n - Renombrar $STA_NAME a "$STA_NAME"_back\n\n --> Volver a ejecutar la adquisicion\n\n" | mail -s 'Atencion '$STA_NAME' - '$fechaini' '  $MailsAvisos
+
+      aviso_ocup=`expr $aviso_ocup + 500000`
+   else
+      echo -e "\n   - El directorio $STA_NAME/spd ocupa actualmente $ocup_spd bytes\n"
+   fi
+
+# Verificamos el estado del disco. Si la particion definida en $partic se llena mas de un valor predeterminado $vol_ocup avisamos destinatarios
+# de alertas $MailsAvisos y paramos el proceso (n=1).
+
+   df -h | awk '{if ($1=="'$partic'") print substr($5,1,(length($5)-1)),$2,$3,$4}' | read porcient total usado disp
+
+   if [[ $porcient -gt $vol_ocup ]]
+   then
+      echo -e "\n   - Atencion la particion $partic esta ya al $porcient % sobrepasando el umbral de $vol_ocup %\n\n Se va a parar inmediatamente la adquisicion para evitar el colapso del sistema.\n Hacer un backup de los ficheros SPD descargados hasta el momento y convertirlos a mseed\n para la base de datos.\n\n  --> Hacer espacio en el disco y volver a ejecutar la adquisicion\n\n" | mail -s 'Atencion '$STA_NAME' parada en '$fechaini' '  $MailsAvisos
+
+# matamos el while infinito haciendo n!=0, y dejamos constancia de ello en el log trans mandar un mail avisando
+      n=1
+      echo -e "\n\n   ATENCION: PROCESO PARADO POR DISCO $partic LLENO !!! \n   La particion $partic esta ya al $porcient %\n"
+   else
+# si todo va bien seguimos tras dejar constancia de la ocupaciuon actual en el log
+      echo -e "\n   - La particion $partic esta actualmente al $porcient %  -->  Seguimos\n"
+   fi
+
+  done 
+
+rm soh.txt
+cd ..
+
+fi

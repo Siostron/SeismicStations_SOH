@@ -52,7 +52,7 @@
 - ## SpiderNano_Worldsensing/Spider_PseudoTiempoReal_Geospace.job
   ## SpiderNano_Worldsensing/Spider_PseudoTiempoReal_TC.job
 
-  Bash scipts to retieve the internal data of a SpiderNano Worldsensing (spd files), convert them to mssed and simulate a seedlink connection. It uses Worldsensing's tool *spd2ms* to obtain the mseeds files, Iris *Rinserver* (https://github.com/EarthScope/ringserver) to create a seedling rinbuffer and *qmerge* to split the mseed files. The scrip also sends a dayly email with the SOH of the station. Linux *mailutils* must be installed and configured. The only diference between these two scripts is the correction of Geospace's polarity inversion:
+  Bash scipts to retieve the internal data of a SpiderNano Worldsensing (spd files), convert them to mssed and simulate a seedlink connection. It uses Worldsensing's tool *spd2ms* to obtain the mseeds files, Iris *Rinserver* (https://github.com/EarthScope/ringserver) to create a seedling rinbuffer and *qmerge* to split the mseed files. The scrip also sends a daily email with the SOH of the station. Linux *mailutils* must be installed and configured. The only diference between these two scripts is the correction of Geospace's polarity inversion:
 
 ```
 195,196c193

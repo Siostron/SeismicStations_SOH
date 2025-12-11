@@ -40,6 +40,10 @@
   Ex: ``./check_CertimusSOH.job YH EP02 80.xx.yyy.91 >& ./Trash/YH_EP02.log &``
 <img width="908" height="229" alt="Captura desde 2025-12-05 10-43-06" src="https://github.com/user-attachments/assets/32304d3f-973d-446d-94ae-fad0d3e22285" />
 
+- ## Certimus_Guralp/Clean_Certimus_status.job
+- ## Certimus_Guralp/Clean_Certimus_SOH.L.job
+
+  Bash scripts to clean Certimus Status information (from MicroSD and seedlink) and obtain a simplified SOH file.
 
 - ## Taurus_Nanometics/check_TaurusSOH.job
 
